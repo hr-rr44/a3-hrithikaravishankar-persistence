@@ -14,8 +14,9 @@ const submit = async function( event ) {
   const item = document.querySelector("#item").value.trim()
   const category = document.querySelector("#category").value.trim()
   const expirationDate = document.querySelector("#expirationDate").value
+  const urgent = document.querySelector("#urgent").checked;
 
-  const json = { item, category, expirationDate }
+  const json = { item, category, expirationDate, urgent }
   const body = JSON.stringify(json)
 
   const response = await fetch( "/submit", {
@@ -44,8 +45,8 @@ const updateTable = function(data) {
     <td>${entry.category}</td>
     <td>${entry.expirationDate}</td>
     <td>${entry.daysUntilExpiration} day(s) </td>
+    <td>${entry.urgent ? "✅" : "❌"}</td> 
     <td><button class="delete-btn" data-id="${entry._id}">Delete</button></td>
-    <td><button class="edit-btn" data-id="${entry._id}">Edit</button></td>
     `
 
     tableBody.appendChild(row)
@@ -85,7 +86,7 @@ const deleteItem = async function(id) {
 };
 
 window.onload = async function() {
-   const form = document.querySelector("#groceryForm");
+  const form = document.querySelector("#groceryForm");
   form.onsubmit = submit;
 
   const res = await fetch("/items");
@@ -94,4 +95,14 @@ window.onload = async function() {
     updateTable(items);
 
   }
+
+  document.getElementById("logoutBtn").onclick = async () => {
+    const res = await fetch("/logout", { method: "POST" });
+    if (res.ok) {
+      window.location.href = "/";
+    } else {
+      alert("Logout failed");
+    }
+  }
+
 };

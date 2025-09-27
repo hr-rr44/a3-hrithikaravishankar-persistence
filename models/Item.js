@@ -5,7 +5,8 @@ const ItemSchema = new mongoose.Schema({
   item: String,
   category: String,
   expirationDate: String,
-  daysUntilExpiration: Number
+  daysUntilExpiration: Number,
+  urgent: { type: Boolean, default: false }
 }, { timestamps: true });
 
 module.exports = mongoose.model("Item", ItemSchema);

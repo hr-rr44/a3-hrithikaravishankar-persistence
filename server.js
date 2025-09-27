@@ -1,8 +1,8 @@
 const express = require( 'express' );
+const fs = require("fs");
 const mongoose = require("mongoose");
 const path = require("path");
 const session = require("express-session");
-const bcrypt = require("bcrypt");
 const MongoStore = require("connect-mongo");
 const dotenv = require("dotenv");
 const mime = require("mime");
@@ -21,22 +21,27 @@ const Item = require("./models/Item");
 const mongoUri = process.env.MONGO_URI;
 mongoose.connect(mongoUri)
 .then(() => console.log("connected to mongodb!"))
-.catch(err => console.log("Oops... there is a database error:", err));
+.catch(err => {
+  console.error("Oops... there is a database connection error:", err);
+  process.exit(1);
+});
 
 // Middleware
-
-/* app.use( express.static( 'public' ) );
-app.use( express.static( 'views'  ) );
-app.use( express.json() ); */
-
-// serve static files (CSS, JS, HTML in /public)
-app.use(express.static(path.join(__dirname, "public")));
 app.use( express.json()) // parsing
+app.use(express.urlencoded({ extended: true }));
 
 //sessions stored in mongodb
 app.use(session({
-
-}))
+  secret: process.env.SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  store: MongoStore.create({ mongoUrl: mongoUri, collectionName: "sessions" }),
+  cookie: { 
+    httpOnly: true, 
+    secure: false, 
+    maxAge: 1000 * 60 * 60 * 24 * 7 // 7 days
+  }
+}));
 
 
 let groceryList = []
@@ -53,118 +58,154 @@ app.get("/", (req, res) => {
 
 // GET "/app" --> main grocery app (requires login)
 app.get("/app", (req, res) => {
-
+  if (!req.session.userId) return res.redirect("/");
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 // POST "/login" --> create account if new user; otherwise check password
+app.post("/login", async (req, res) => {
+  const { username, password } = req.body || {};
+  // user needs to input
+  if (!username || !password) { 
+    return res.status(400).json({ ok: false, message: "Username and password required" });
+  }
 
+  // try to find a user with the username inputted in the database
+  try {
+    let user = await User.findOne({ username });
+    // if no user is found, create a new one
+    if (!user) {
+      user = new User({ username, password });
+      await user.save();
+      req.session.userId = user._id;
+      return res.json({ ok: true, created: true });
+    }
+
+    //if user exists, compare passwords; if wrong, return error
+    const match = await user.comparePassword(password);
+    if (!match) return res.status(401).json({ ok: false, message: "Incorrect password" });
+
+    req.session.userId = user._id;
+    return res.json({ ok: true, created: false });
+  } catch (err){
+    console.error(err);
+    res.status(500).json({ ok: false, message: "Server error" });
+  }
+});
 
 // POST "/logout" --> clear session
+app.post("/logout", (req, res) => {
+  req.session.destroy(err => {
+    if (err) return res.status(500).json({ ok: false });
+    res.clearCookie()
+    res.json({ ok: true });
+  });
+});
 
+// ---------------------
+// ------ END ------
+// ---------------------
+//middleware to require login
+function requireAuth(req, res, next) {
+  if (!req.session.userId) return res.status(401).json({ ok: false });
+  next();
+}
+
+// items API
+
+// GET /items --> fetch all items
+app.get("/items", requireAuth, async (req, res) => {
+  try {
+    const items = await Item.find({ userId: req.session.userId }).sort({ createdAt: -1 });
+    res.json(items);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false });
+  }
+});
+
+// POST /submit --> add new item
+app.post("/submit", requireAuth, async (req, res) => {
+  const { item, category, expirationDate, urgent } = req.body;
+
+  if (!item || !category || !expirationDate) { 
+    return res.status(400).json({ ok: false, message: "Missing fields" }); 
+  }
+
+  try {
+    const now = new Date();
+    const expDate = new Date(expirationDate);
+    const msPerDay = 1000 * 60 * 60 * 24;
+    const daysUntilExpiration = Math.ceil((expDate - now) / msPerDay);
+
+    await new Item({
+      userId: req.session.userId,
+      item,
+      category,
+      expirationDate,
+      daysUntilExpiration,
+      urgent: !!urgent
+    }).save();
+
+    const items = await Item.find({ userId: req.session.userId }).sort({ createdAt: -1 });
+    res.json(items);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false });
+  }
+});
+
+// POST /delete -->a delete item
+app.post("/delete", requireAuth, async (req, res) => {
+  try {
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ ok: false, message: "Missing id" });
+
+    await Item.deleteOne({ _id: id, userId: req.session.userId });
+    const items = await Item.find({ userId: req.session.userId }).sort({ createdAt: -1 });
+    res.json(items);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false });
+  }
+});
+
+// POST /update --> update item
+app.post("/update", requireAuth, async (req, res) => {
+  try {
+    const { id, item, category, expirationDate, urgent } = req.body;
+    const update = {};
+    if (item) update.item = item;
+    if (category) update.category = category;
+    if (expirationDate) {
+      update.expirationDate = expirationDate;
+      const now = new Date();
+      const expDate = new Date(expirationDate);
+      const msPerDay = 1000 * 60 * 60 * 24;
+      update.daysUntilExpiration = Math.ceil((expDate - now) / msPerDay);
+    }
+
+    if (urgent !== undefined) update.urgent = urgent;
+
+
+    await Item.updateOne({ _id: id, userId: req.session.userId }, { $set: update });
+    const items = await Item.find({ userId: req.session.userId }).sort({ createdAt: -1 });
+    res.json(items);
+  } catch (err){
+    console.error(err);
+    res.status(500).json({ ok: false });
+  }
+});
 
 // ---------------------
 // ------ END ------
 // ---------------------
 
-const server = http.createServer( function( request,response ) {
-  if( request.method === "GET" ) {
-    handleGet( request, response )    
-    //added smth here
-  }else if( request.method === "POST" && request.url === "/submit"){
-    handlePost( request, response ) 
-  }else if( request.method === "POST" && request.url === "/delete"){
-    handleDelete(request, response)
-  }
+// ---------- Static Files ----------
+app.use(express.static(path.join(__dirname, "public")));
+app.use((req, res) => res.redirect("/"));
 
-})
-
-const handleGet = function( request, response ) {
-  const filename = dir + request.url.slice( 1 ) 
-
-  if( request.url === "/" ) {
-    sendFile( response, "public/index.html" )
-  }else{
-    sendFile( response, filename )
-  }
-}
-
-const handlePost = function( request, response ) {
-  let dataString = ""
-
-  request.on( "data", function( data ) {
-      dataString += data 
-  })
-
-  request.on( "end", function() {
-    // console.log( JSON.parse( dataString ) )
-    const incoming = JSON.parse(dataString)
-
-    // ... do something with the data here!!!
-    // will calculate how many days till expiration
-    const now = new Date()
-    const expDate = new Date(incoming.expirationDate)
-    // number of milliseconds in a full day
-    const msPerDay = 1000 * 60 * 60 * 24
-    const daysUntilExpiration = Math.ceil((expDate - now) / msPerDay)
-
-    // creates new object that includes all fields from 'incoming'
-    const groceryItemWithExpiry = {
-      ...incoming, daysUntilExpiration
-    }
-
-    // add new item to groceryList array
-    groceryList.push(groceryItemWithExpiry)
-
-    response.writeHead( 200, "OK", {"Content-Type": "text/plain" })
-    // response.end("test")
-    response.end(JSON.stringify(groceryList))
-  })
-}
-
-const handleDelete = function(request, response) {
-  let dataString = ""
-
-  request.on( "data", function( data ) {
-      dataString += data 
-  })
-
-  request.on( "end", function() {
-    const incoming = JSON.parse(dataString)
-    const index = incoming.index
-
-    // need to check index and see if item is valid before deleting
-    if (typeof index == "number" && index >= 0 && index < groceryList.length) {
-      groceryList.splice(index, 1)
-    }
-
-    response.writeHead( 200, {"Content-Type": "application/json" })
-    // response.end("test")
-    response.end(JSON.stringify(groceryList))
-  
-  })
-
-}
-
-const sendFile = function( response, filename ) {
-   const type = mime.getType( filename ) 
-
-   fs.readFile( filename, function( err, content ) {
-
-     // if the error = null, then we"ve loaded the file successfully
-     if( err === null ) {
-
-       // status code: https://httpstatuses.com
-       response.writeHeader( 200, { "Content-Type": type })
-       response.end( content )
-
-     }else{
-
-       // file not found, error code 404
-       response.writeHeader( 404 )
-       response.end( "404 Error: File Not Found" )
-
-     }
-   })
-}
-
-server.listen( process.env.PORT || port )
+// start server
+app.listen(PORT, () => {
+  console.log(`server running on http://localhost:${PORT}`);
+});
