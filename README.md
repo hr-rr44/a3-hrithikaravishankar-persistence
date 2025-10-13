@@ -16,8 +16,6 @@ Resources I used:
 Looked at the libraries for Mongoose and Bootstrap CSS
 https://mongoosejs.com/docs/connections.html
 
-AI Use: I ran into problems with my server.js routes (especially when adding and updating items). So, I used ChatGPT for debugging help. For example, it helped me realize that I forgot to include certain request body fields and that I declared some variables out of order. 
-
 # ************************************
 ****** Design Achievements: ******
 # ************************************
